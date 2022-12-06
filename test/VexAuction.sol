@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0
 pragma solidity ^0.8.13;
 
-import "../src/sealed-bid/over-collateralized-auction/OverCollateralizedAuction.sol";
-import "../src/sealed-bid/over-collateralized-auction/IOverCollateralizedAuctionErrors.sol";
+import "../src/sealed-bid/vex-auction/VexAuction.sol";
+import "../src/sealed-bid/vex-auction/IVexAuctionErrors.sol";
 import "./utils/TestActors.sol";
 import "./utils/TestERC721.sol";
 
-contract OverCollateralizedAuctionTest is
-    IOverCollateralizedAuctionErrors,
-    TestActors
-{
-    OverCollateralizedAuction auction;
+contract VexAuctionTest is IVexAuctionErrors, TestActors {
+    VexAuction auction;
     TestERC721 erc721;
 
     uint96 constant ONE_ETH = 10**18;
@@ -18,7 +15,7 @@ contract OverCollateralizedAuctionTest is
 
     function setUp() public override {
         super.setUp();
-        auction = new OverCollateralizedAuction();
+        auction = new VexAuction();
         erc721 = new TestERC721();
         erc721.mint(alice, TOKEN_ID);
         hoax(alice);
@@ -26,21 +23,18 @@ contract OverCollateralizedAuctionTest is
     }
 
     function testCreateAuction() external {
-        OverCollateralizedAuction.Auction
-            memory expectedAuction = OverCollateralizedAuction.Auction({
-                seller: alice,
-                startTime: uint32(block.timestamp + 1 hours),
-                endOfBiddingPeriod: uint32(block.timestamp + 2 hours),
-                endOfRevealPeriod: uint32(block.timestamp + 3 hours),
-                numUnrevealedBids: 0,
-                highestBid: ONE_ETH,
-                secondHighestBid: ONE_ETH,
-                highestBidder: address(0),
-                index: 1
-            });
-        OverCollateralizedAuction.Auction memory actualAuction = createAuction(
-            TOKEN_ID
-        );
+        VexAuction.Auction memory expectedAuction = VexAuction.Auction({
+            seller: alice,
+            startTime: uint32(block.timestamp + 1 hours),
+            endOfBiddingPeriod: uint32(block.timestamp + 2 hours),
+            endOfRevealPeriod: uint32(block.timestamp + 3 hours),
+            numUnrevealedBids: 0,
+            highestBid: ONE_ETH,
+            secondHighestBid: ONE_ETH,
+            highestBidder: address(0),
+            index: 1
+        });
+        VexAuction.Auction memory actualAuction = createAuction(TOKEN_ID);
         assertAuctionsEqual(actualAuction, expectedAuction);
     }
 
@@ -143,9 +137,7 @@ contract OverCollateralizedAuctionTest is
     }
 
     function testRevealBid() external {
-        OverCollateralizedAuction.Auction memory expectedState = createAuction(
-            TOKEN_ID
-        );
+        VexAuction.Auction memory expectedState = createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = 2 * ONE_ETH;
         uint96 bidValue = ONE_ETH + 1;
@@ -250,9 +242,7 @@ contract OverCollateralizedAuctionTest is
     }
 
     function testRevealWithInsufficientCollateral() external {
-        OverCollateralizedAuction.Auction memory expectedState = createAuction(
-            TOKEN_ID
-        );
+        VexAuction.Auction memory expectedState = createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = ONE_ETH;
         uint96 bidValue = ONE_ETH + 1;
@@ -275,9 +265,7 @@ contract OverCollateralizedAuctionTest is
     }
 
     function testUpdateHighestBidder() external {
-        OverCollateralizedAuction.Auction memory expectedState = createAuction(
-            TOKEN_ID
-        );
+        VexAuction.Auction memory expectedState = createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = 2 * ONE_ETH;
         commitBid(
@@ -582,7 +570,7 @@ contract OverCollateralizedAuctionTest is
 
     function createAuction(uint256 tokenId)
         private
-        returns (OverCollateralizedAuction.Auction memory a)
+        returns (VexAuction.Auction memory a)
     {
         hoax(alice);
         auction.createAuction(
@@ -645,8 +633,8 @@ contract OverCollateralizedAuctionTest is
     }
 
     function assertAuctionsEqual(
-        OverCollateralizedAuction.Auction memory actualAuction,
-        OverCollateralizedAuction.Auction memory expectedAuction
+        VexAuction.Auction memory actualAuction,
+        VexAuction.Auction memory expectedAuction
     ) private {
         assertEq(actualAuction.seller, expectedAuction.seller, "seller");
         assertEq(

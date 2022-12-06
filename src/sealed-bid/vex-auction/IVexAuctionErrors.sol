@@ -2,7 +2,7 @@
 pragma solidity ^0.8.13;
 
 /// @title Custom errors for OverCollateralizedAuction
-interface IOverCollateralizedAuctionErrors {
+interface IVexAuctionErrors {
     error RevealPeriodOngoingError();
     error BidPeriodOngoingError();
     error InvalidAuctionIndexError(uint64 index);
