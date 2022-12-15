@@ -9,6 +9,9 @@ import "./IVexAuctionErrors.sol";
 /// @title An on-chain, over-collateralization, sealed-bid, second-price auction
 contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
     using SafeTransferLib for address;
+    uint96 constant MIN_BID = 10**18;
+    uint96 constant MAX_BID = 2 * (10**18);
+    uint96 constant BID_UNIT = 10**16;
 
     /// @dev Representation of an auction in storage. Occupies three slots.
     /// @param seller The address selling the auctioned asset.
@@ -38,6 +41,7 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
         uint96 secondHighestBid;
         // =====================
         address highestBidder;
+        address secondHighestBidder;
         uint64 index;
     }
 
@@ -59,6 +63,12 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
     struct Bid {
         bytes20 commitment;
         uint96 collateral;
+        uint16 revealed;
+    }
+
+    struct BidProof {
+        bytes32 hashNode;
+        uint16 label;
     }
 
     /// @notice Emitted when an auction is created.
@@ -111,6 +121,9 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
     mapping(address => mapping(uint256 => mapping(uint64 => mapping(address => Bid)))) // ERC721 token contract // ERC721 token ID // Auction index // Bidder
         public bids;
 
+    mapping(address => mapping(uint256 => mapping(uint64 => mapping(address => BidProof)))) // ERC721 token contract // ERC721 token ID // Auction index // Bidder
+        public bidProofs;
+
     /// @notice Creates an auction for the given ERC721 asset with the given
     ///         auction parameters.
     /// @param tokenContract The address of the ERC721 contract for the asset
@@ -157,6 +170,7 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
         auction.secondHighestBid = reservePrice;
         // Reset
         auction.highestBidder = address(0);
+        auction.secondHighestBidder = address(0);
         // Increment auction index for this item
         auction.index++;
 
@@ -206,6 +220,7 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
         // If this is the bidder's first commitment, increment `numUnrevealedBids`.
         if (bid.commitment == bytes20(0)) {
             auction.numUnrevealedBids++;
+            bid.revealed = 0;
         }
         bid.commitment = commitment;
         if (msg.value != 0) {
@@ -238,9 +253,11 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
         Bid storage bid = bids[tokenContract][tokenId][auctionIndex][
             msg.sender
         ];
+        BidProof storage bidProof = bidProofs[tokenContract][tokenId][
+            auctionIndex
+        ][msg.sender];
 
-        // Check that the opening is valid
-        bytes20 bidHash = bytes20(
+        bytes32 salt = traverseHashChain(
             keccak256(
                 abi.encode(
                     nonce,
@@ -249,13 +266,16 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
                     tokenId,
                     auctionIndex
                 )
-            )
+            ),
+            bidValue
         );
+        bytes20 bidHash = bytes20(salt);
+        // Check that the opening is valid
         if (bidHash != bid.commitment) {
             revert InvalidOpeningError(bidHash, bid.commitment);
         } else {
             // Mark commitment as open
-            bid.commitment = bytes20(0);
+            bid.revealed = 1;
             auction.numUnrevealedBids--;
         }
 
@@ -268,12 +288,70 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
             // Update record of (second-)highest bid as necessary
             uint96 currentHighestBid = auction.highestBid;
             if (bidValue > currentHighestBid) {
-                auction.highestBid = bidValue;
+                //create LessThan Proof for person 2nd -> 3rd
+                BidProof storage lessThanProof = bidProofs[tokenContract][
+                    tokenId
+                ][auctionIndex][auction.secondHighestBidder];
+                lessThanProof.hashNode = traverseHashChain(
+                    lessThanProof.hashNode,
+                    MAX_BID - (auction.highestBid - auction.secondHighestBid)
+                );
+                lessThanProof.label = 0;
+
                 auction.secondHighestBid = currentHighestBid;
+                auction.secondHighestBidder = auction.highestBidder;
+                BidProof storage equalThanProof = bidProofs[tokenContract][
+                    tokenId
+                ][auctionIndex][auction.secondHighestBidder];
+                equalThanProof.label = 1;
+
+                auction.highestBid = bidValue;
                 auction.highestBidder = msg.sender;
+                BidProof storage greaterThanProof = bidProofs[tokenContract][
+                    tokenId
+                ][auctionIndex][msg.sender];
+                greaterThanProof.label = 2;
+                greaterThanProof.hashNode = keccak256(
+                    abi.encode(
+                        nonce,
+                        bidValue,
+                        tokenContract,
+                        tokenId,
+                        auctionIndex
+                    )
+                );
             } else {
                 if (bidValue > auction.secondHighestBid) {
+                    BidProof storage lessThanProof = bidProofs[tokenContract][
+                        tokenId
+                    ][auctionIndex][auction.secondHighestBidder];
+                    lessThanProof.label = 0;
+
                     auction.secondHighestBid = bidValue;
+                    bidProof.hashNode = keccak256(
+                        abi.encode(
+                            nonce,
+                            bidValue,
+                            tokenContract,
+                            tokenId,
+                            auctionIndex
+                        )
+                    );
+                    bidProof.label = 1;
+                } else {
+                    bidProof.hashNode = traverseHashChain(
+                        keccak256(
+                            abi.encode(
+                                nonce,
+                                bidValue,
+                                tokenContract,
+                                tokenId,
+                                auctionIndex
+                            )
+                        ),
+                        MAX_BID - (auction.secondHighestBid - bidValue)
+                    );
+                    bidProof.label = 0;
                 }
                 // Return collateral
                 bid.collateral = 0;
@@ -325,6 +403,11 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
                 tokenId
             );
         } else {
+            BidProof storage bidProof = bidProofs[tokenContract][tokenId][1][
+                highestBidder
+            ];
+
+            bidProof.label = 2;
             // Transfer auctioned asset to highest bidder
             ERC721(tokenContract).safeTransferFrom(
                 address(this),
@@ -344,6 +427,18 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
                 highestBidder.safeTransferETH(collateral - secondHighestBid);
             }
         }
+    }
+
+    function traverseHashChain(bytes32 salt, uint256 bidValue)
+        internal
+        pure
+        returns (bytes32)
+    {
+        uint256 i;
+        for (i = MAX_BID; i > bidValue; i -= BID_UNIT) {
+            salt = keccak256(abi.encode(salt));
+        }
+        return salt;
     }
 
     /// @notice Withdraws collateral. Bidder must have opened their bid commitment
@@ -366,7 +461,7 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
         Bid storage bid = bids[tokenContract][tokenId][auctionIndex][
             msg.sender
         ];
-        if (bid.commitment != bytes20(0)) {
+        if (bid.revealed != 1) {
             revert UnrevealedBidError();
         }
 
@@ -377,6 +472,16 @@ contract VexAuction is IVexAuctionErrors, ReentrancyGuard {
                 revert CannotWithdrawError();
             }
         }
+
+        BidProof storage bidProof = bidProofs[tokenContract][tokenId][
+            auctionIndex
+        ][msg.sender];
+
+        // if (bid == auction.secondHighestBid) {
+        //     bidProof.label = 1;
+        // } else if (bid < auction.secondHighestBid) {
+        //     bidProof.label = 0;
+        // }
         // Return collateral
         uint96 collateral = bid.collateral;
         bid.collateral = 0;

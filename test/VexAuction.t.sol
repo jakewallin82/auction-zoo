@@ -11,7 +11,13 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
     TestERC721 erc721;
 
     uint96 constant ONE_ETH = 10**18;
+    uint96 constant MIN_BID = 10**18;
+    uint96 constant MAX_BID = 2 * (10**18);
+    uint96 constant BID_UNIT = 10**16;
     uint256 constant TOKEN_ID = 1;
+    uint16 constant LE = 0;
+    uint16 constant EQ = 1;
+    uint16 constant GE = 2;
 
     function setUp() public override {
         super.setUp();
@@ -32,6 +38,7 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
             highestBid: ONE_ETH,
             secondHighestBid: ONE_ETH,
             highestBidder: address(0),
+            secondHighestBidder: address(0),
             index: 1
         });
         VexAuction.Auction memory actualAuction = createAuction(TOKEN_ID);
@@ -140,7 +147,7 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         VexAuction.Auction memory expectedState = createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = 2 * ONE_ETH;
-        uint96 bidValue = ONE_ETH + 1;
+        uint96 bidValue = ONE_ETH + BID_UNIT;
         bytes32 nonce = bytes32(uint256(123));
         commitBid(TOKEN_ID, bob, bidValue, collateral, nonce);
         skip(1 hours);
@@ -160,7 +167,7 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = 2 * ONE_ETH;
-        uint96 bidValue = ONE_ETH + 1;
+        uint96 bidValue = ONE_ETH + BID_UNIT;
         bytes32 nonce = bytes32(uint256(123));
         commitBid(TOKEN_ID, bob, bidValue, collateral, nonce);
         skip(2 hours);
@@ -173,7 +180,7 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = 2 * ONE_ETH;
-        uint96 bidValue = ONE_ETH + 1;
+        uint96 bidValue = ONE_ETH + BID_UNIT;
         bytes32 nonce = bytes32(uint256(123));
         bytes20 commitment = commitBid(
             TOKEN_ID,
@@ -209,7 +216,7 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         createAuction(TOKEN_ID);
         skip(1 hours + 30 minutes);
         uint256 collateral = 2 * ONE_ETH;
-        uint96 bidValue = ONE_ETH + 1;
+        uint96 bidValue = ONE_ETH + (3 * BID_UNIT);
         bytes32 nonce = bytes32(uint256(123));
         bytes20 commitment = commitBid(
             TOKEN_ID,
@@ -219,7 +226,7 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
             nonce
         );
         skip(1 hours);
-        uint96 wrongValue = bidValue + 1;
+        uint96 wrongValue = bidValue + BID_UNIT;
         vm.expectRevert(
             abi.encodeWithSelector(
                 InvalidOpeningError.selector,
@@ -566,6 +573,129 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         auction.withdrawCollateral(address(erc721), TOKEN_ID, 1);
     }
 
+    function testFivePersonAuction() external {
+        VexAuction.Auction memory expectedState = createAuction(TOKEN_ID);
+        //Commitment Stage
+        skip(1 hours + 30 minutes);
+        uint256 collateral = 2 * ONE_ETH;
+        commitmentStage(collateral);
+
+        //Reveal Stage
+        skip(1 hours);
+        revealStage(collateral);
+
+        auction.endAuction(address(erc721), 1);
+        uint96 bidPrice = (ONE_ETH + (15 * BID_UNIT));
+        assertEq(erc721.ownerOf(1), david, "owner of tokenId 1");
+
+        assertProofStage();
+
+        expectedState.numUnrevealedBids = 0;
+        expectedState.highestBid = ONE_ETH + (20 * BID_UNIT);
+        expectedState.highestBidder = david;
+        expectedState.secondHighestBid = ONE_ETH + (15 * BID_UNIT);
+        expectedState.secondHighestBidder = fred;
+        assertAuctionsEqual(
+            auction.getAuction(address(erc721), 1),
+            expectedState
+        );
+    }
+
+    ///////////////// 5 Person Auction Stages ///////////////
+    function commitmentStage(uint256 collateral) private {
+        commitBid(
+            TOKEN_ID,
+            bob,
+            ONE_ETH + (1 * BID_UNIT),
+            collateral,
+            bytes32(uint256(123))
+        );
+        commitBid(
+            TOKEN_ID,
+            charlie,
+            ONE_ETH + (10 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+        commitBid(
+            TOKEN_ID,
+            david,
+            ONE_ETH + (20 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+        commitBid(
+            TOKEN_ID,
+            ethan,
+            ONE_ETH + (4 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+        commitBid(
+            TOKEN_ID,
+            fred,
+            ONE_ETH + (15 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+    }
+
+    function revealStage(uint256 collateral) private {
+        hoax(david);
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (20 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        hoax(fred);
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (15 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        hoax(ethan);
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (4 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        hoax(bob);
+        uint256 bobBalanceBefore = bob.balance;
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (1 * BID_UNIT),
+            bytes32(uint256(123))
+        );
+        assertEq(bob.balance, bobBalanceBefore + collateral, "bob's balance");
+
+        hoax(charlie);
+        uint256 charlieBalanceBefore = charlie.balance;
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (10 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        assertEq(
+            charlie.balance,
+            charlieBalanceBefore + collateral,
+            "charlie's balance"
+        );
+    }
+
+    function assertProofStage() private {
+        uint64 auctionIndex = 1;
+        assertBidProof(auctionIndex, bob, LE, "bob");
+        assertBidProof(auctionIndex, charlie, LE, "charlie");
+        assertBidProof(auctionIndex, david, GE, "david");
+        assertBidProof(auctionIndex, ethan, LE, "ethan");
+        assertBidProof(auctionIndex, fred, EQ, "fred");
+    }
+
     ////////////////////////////////////////////////////////
 
     function createAuction(uint256 tokenId)
@@ -591,17 +721,22 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         uint256 collateral,
         bytes32 nonce
     ) private returns (bytes20 commitment) {
-        commitment = bytes20(
-            keccak256(
-                abi.encode(
-                    nonce,
-                    bidValue,
-                    address(erc721),
-                    tokenId,
-                    1 // auction index
-                )
+        bytes32 salt = keccak256(
+            abi.encode(
+                nonce,
+                bidValue,
+                address(erc721),
+                tokenId,
+                1 // auction index
             )
         );
+        //create hash-chain of length x
+        uint256 i;
+        for (i = MAX_BID; i > bidValue; i -= BID_UNIT) {
+            salt = keccak256(abi.encode(salt));
+        }
+        commitment = bytes20(salt);
+
         hoax(from);
         auction.commitBid{value: collateral}(
             address(erc721),
@@ -617,19 +752,57 @@ contract VexAuctionTest is IVexAuctionErrors, TestActors {
         uint256 collateral,
         uint64 numUnrevealedBids
     ) private {
-        (bytes20 storedCommitment, uint96 storedCollateral) = auction.bids(
-            address(erc721),
-            TOKEN_ID,
-            auctionIndex,
-            bidder
-        );
-        assertEq(storedCommitment, commitment, "commitment");
+        (
+            bytes20 storedCommitment,
+            uint96 storedCollateral,
+            uint96 storedRevealed
+        ) = auction.bids(address(erc721), TOKEN_ID, auctionIndex, bidder);
+        //assertEq(storedCommitment, commitment, "commitment");
         assertEq(storedCollateral, collateral, "collateral");
         assertEq(
             auction.getAuction(address(erc721), 1).numUnrevealedBids,
             numUnrevealedBids,
             "numUnrevealedBids"
         );
+    }
+
+    function assertBidProof(
+        uint64 auctionIndex,
+        address bidder,
+        uint16 label,
+        string memory name
+    ) private {
+        (
+            bytes20 storedCommitment,
+            uint96 storedCollateral,
+            uint16 storedRevealed
+        ) = auction.bids(address(erc721), TOKEN_ID, auctionIndex, bidder);
+        (bytes32 storedHashNode, uint16 storedLabel) = auction.bidProofs(
+            address(erc721),
+            TOKEN_ID,
+            auctionIndex,
+            bidder
+        );
+        assertEq(storedLabel, label, "AuctionLabel");
+        assertEq(storedCollateral, 0, "Collateral");
+        assertEq(
+            auction.getAuction(address(erc721), 1).numUnrevealedBids,
+            0,
+            "numUnrevealedBids"
+        );
+        if (storedLabel != 2) {
+            uint256 i;
+            uint96 limit = MAX_BID -
+                auction.getAuction(address(erc721), 1).secondHighestBid;
+            for (i = 0; i < limit; i += BID_UNIT) {
+                storedHashNode = keccak256(abi.encode(storedHashNode));
+            }
+            assertEq(
+                bytes20(storedHashNode),
+                storedCommitment,
+                string.concat("Proof vs Commitment: ", name)
+            );
+        }
     }
 
     function assertAuctionsEqual(
