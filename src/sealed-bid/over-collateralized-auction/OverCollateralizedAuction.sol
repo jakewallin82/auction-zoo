@@ -7,7 +7,10 @@ import "solmate/utils/SafeTransferLib.sol";
 import "./IOverCollateralizedAuctionErrors.sol";
 
 /// @title An on-chain, over-collateralization, sealed-bid, second-price auction
-contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, ReentrancyGuard {
+contract OverCollateralizedAuction is
+    IOverCollateralizedAuctionErrors,
+    ReentrancyGuard
+{
     using SafeTransferLib for address;
 
     /// @dev Representation of an auction in storage. Occupies three slots.
@@ -19,13 +22,13 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
     ///        no longer be opened.
     /// @param numUnrevealedBids The number of bid commitments that have not
     ///        yet been opened.
-    /// @param highestBid The value of the highest bid revealed so far, or 
+    /// @param highestBid The value of the highest bid revealed so far, or
     ///        the reserve price if no bids have exceeded it.
     /// @param secondHighestBid The value of the second-highest bid revealed
     ///        so far, or the reserve price if no two bids have exceeded it.
     /// @param highestBidder The bidder that placed the highest bid.
     /// @param index Auctions selling the same asset (i.e. tokenContract-tokenId
-    ///        pair) share the same storage. This value is incremented for 
+    ///        pair) share the same storage. This value is incremented for
     ///        each new auction of a particular asset.
     struct Auction {
         address seller;
@@ -42,19 +45,19 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
     }
 
     /// @dev Representation of a bid in storage. Occupies one slot.
-    /// @param commitment The hash commitment of a bid value. 
-    ///        WARNING: The hash is truncated to 20 bytes (160 bits) to save one 
+    /// @param commitment The hash commitment of a bid value.
+    ///        WARNING: The hash is truncated to 20 bytes (160 bits) to save one
     ///        storage slot. This weakens the security, and it is theoretically
     ///        feasible to generate two bids with different values that hash to
     ///        the same 20-byte value (h/t kchalkias for flagging this issue:
-    ///        https://github.com/a16z/auction-zoo/issues/2). This would allow a 
+    ///        https://github.com/a16z/auction-zoo/issues/2). This would allow a
     ///        bidder to effectively withdraw their bid at the last minute, once
     ///        other bids have been revealed. Currently, the computational cost of
-    ///        such an attack would likely be prohibitvely high –– as of June 2021, 
-    ///        researchers estimated that finding such a collision would cost ~$10B. 
-    ///        If computational costs falls to the extent that this attack is a 
-    ///        concern, it is possible to further mitigate the possibility of such 
-    ///        an attack by using the full 32-byte hash value for the bid commitment. 
+    ///        such an attack would likely be prohibitvely high –– as of June 2021,
+    ///        researchers estimated that finding such a collision would cost ~$10B.
+    ///        If computational costs falls to the extent that this attack is a
+    ///        concern, it is possible to further mitigate the possibility of such
+    ///        an attack by using the full 32-byte hash value for the bid commitment.
     /// @param collateral The amount of collateral backing the bid.
     struct Bid {
         bytes20 commitment;
@@ -68,7 +71,7 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
     /// @param seller The address selling the auctioned asset.
     /// @param startTime The unix timestamp at which bidding can start.
     /// @param bidPeriod The duration of the bidding period, in seconds.
-    /// @param revealPeriod The duration of the commitment reveal period, 
+    /// @param revealPeriod The duration of the commitment reveal period,
     ///        in seconds.
     /// @param reservePrice The minimum price that the asset will be sold for.
     ///        If no bids exceed this price, the asset is returned to `seller`.
@@ -104,15 +107,12 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
     ///         auctioned.
     mapping(address => mapping(uint256 => Auction)) public auctions;
 
-    /// @notice A mapping storing bid commitments and records of collateral, 
-    ///         indexed by: ERC721 contract address, token ID, auction index, 
+    /// @notice A mapping storing bid commitments and records of collateral,
+    ///         indexed by: ERC721 contract address, token ID, auction index,
     ///         and bidder address. If the commitment is `bytes20(0)`, either
     ///         no commitment was made or the commitment was opened.
-    mapping(address // ERC721 token contract
-        => mapping(uint256 // ERC721 token ID
-            => mapping(uint64 // Auction index
-                => mapping(address // Bidder
-                    => Bid)))) public bids;
+    mapping(address => mapping(uint256 => mapping(uint64 => mapping(address => Bid)))) // ERC721 token contract // ERC721 token ID // Auction index // Bidder
+        public bids;
 
     /// @notice Creates an auction for the given ERC721 asset with the given
     ///         auction parameters.
@@ -121,21 +121,18 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
     /// @param tokenId The ERC721 token ID of the asset being auctioned.
     /// @param startTime The unix timestamp at which bidding can start.
     /// @param bidPeriod The duration of the bidding period, in seconds.
-    /// @param revealPeriod The duration of the commitment reveal period, 
+    /// @param revealPeriod The duration of the commitment reveal period,
     ///        in seconds.
     /// @param reservePrice The minimum price that the asset will be sold for.
     ///        If no bids exceed this price, the asset is returned to `seller`.
     function createAuction(
         address tokenContract,
         uint256 tokenId,
-        uint32 startTime, 
+        uint32 startTime,
         uint32 bidPeriod,
         uint32 revealPeriod,
         uint96 reservePrice
-    ) 
-        external 
-        nonReentrant
-    {
+    ) external nonReentrant {
         Auction storage auction = auctions[tokenContract][tokenId];
 
         if (startTime == 0) {
@@ -149,7 +146,7 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         if (revealPeriod < 1 hours) {
             revert RevealPeriodTooShortError(revealPeriod);
         }
-        
+
         auction.seller = msg.sender;
         auction.startTime = startTime;
         auction.endOfBiddingPeriod = startTime + bidPeriod;
@@ -157,7 +154,7 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         // Reset
         auction.numUnrevealedBids = 0;
         // Both highest and second-highest bid are set to the reserve price.
-        // Any winning bid must be at least this price, and the winner will 
+        // Any winning bid must be at least this price, and the winner will
         // pay at least this price.
         auction.highestBid = reservePrice;
         auction.secondHighestBid = reservePrice;
@@ -188,14 +185,10 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
     /// @param commitment The commitment to the bid, computed as
     ///        `bytes20(keccak256(abi.encode(nonce, bidValue, tokenContract, tokenId, auctionIndex)))`.
     function commitBid(
-        address tokenContract, 
-        uint256 tokenId, 
+        address tokenContract,
+        uint256 tokenId,
         bytes20 commitment
-    )
-        external
-        payable
-        nonReentrant
-    {
+    ) external payable nonReentrant {
         if (commitment == bytes20(0)) {
             revert ZeroCommitmentError();
         }
@@ -203,14 +196,16 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         Auction storage auction = auctions[tokenContract][tokenId];
 
         if (
-            block.timestamp < auction.startTime || 
+            block.timestamp < auction.startTime ||
             block.timestamp > auction.endOfBiddingPeriod
         ) {
             revert NotInBidPeriodError();
         }
 
         uint64 auctionIndex = auction.index;
-        Bid storage bid = bids[tokenContract][tokenId][auctionIndex][msg.sender];
+        Bid storage bid = bids[tokenContract][tokenId][auctionIndex][
+            msg.sender
+        ];
         // If this is the bidder's first commitment, increment `numUnrevealedBids`.
         if (bid.commitment == bytes20(0)) {
             auction.numUnrevealedBids++;
@@ -221,7 +216,7 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         }
     }
 
-    /// @notice Reveals the value of a bid that was previously committed to. 
+    /// @notice Reveals the value of a bid that was previously committed to.
     /// @param tokenContract The address of the ERC721 contract for the asset
     ///        being auctioned.
     /// @param tokenId The ERC721 token ID of the asset being auctioned.
@@ -232,10 +227,7 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         uint256 tokenId,
         uint96 bidValue,
         bytes32 nonce
-    )
-        external
-        nonReentrant
-    {
+    ) external nonReentrant {
         Auction storage auction = auctions[tokenContract][tokenId];
 
         if (
@@ -246,16 +238,22 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         }
 
         uint64 auctionIndex = auction.index;
-        Bid storage bid = bids[tokenContract][tokenId][auctionIndex][msg.sender];
+        Bid storage bid = bids[tokenContract][tokenId][auctionIndex][
+            msg.sender
+        ];
 
         // Check that the opening is valid
-        bytes20 bidHash = bytes20(keccak256(abi.encode(
-            nonce,
-            bidValue,
-            tokenContract,
-            tokenId,
-            auctionIndex
-        )));
+        bytes20 bidHash = bytes20(
+            keccak256(
+                abi.encode(
+                    nonce,
+                    bidValue,
+                    tokenContract,
+                    tokenId,
+                    auctionIndex
+                )
+            )
+        );
         if (bidHash != bid.commitment) {
             revert InvalidOpeningError(bidHash, bid.commitment);
         } else {
@@ -295,7 +293,7 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
             );
         }
     }
-    
+
     /// @notice Ends an active auction. Can only end an auction if the bid reveal
     ///         phase is over, or if all bids have been revealed. Disburses the auction
     ///         proceeds to the seller. Transfers the auctioned asset to the winning
@@ -324,15 +322,25 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         address highestBidder = auction.highestBidder;
         if (highestBidder == address(0)) {
             // No winner, return asset to seller.
-            ERC721(tokenContract).safeTransferFrom(address(this), auction.seller, tokenId);
+            ERC721(tokenContract).safeTransferFrom(
+                address(this),
+                auction.seller,
+                tokenId
+            );
         } else {
             // Transfer auctioned asset to highest bidder
-            ERC721(tokenContract).safeTransferFrom(address(this), highestBidder, tokenId);
+            ERC721(tokenContract).safeTransferFrom(
+                address(this),
+                highestBidder,
+                tokenId
+            );
             uint96 secondHighestBid = auction.secondHighestBid;
             auction.seller.safeTransferETH(secondHighestBid);
 
             // Return excess collateral
-            Bid storage bid = bids[tokenContract][tokenId][auction.index][highestBidder];
+            Bid storage bid = bids[tokenContract][tokenId][auction.index][
+                highestBidder
+            ];
             uint96 collateral = bid.collateral;
             bid.collateral = 0;
             if (collateral - secondHighestBid != 0) {
@@ -351,26 +359,25 @@ contract OverCollateralizedAuction is IOverCollateralizedAuctionErrors, Reentran
         address tokenContract,
         uint256 tokenId,
         uint64 auctionIndex
-    )
-        external
-        nonReentrant        
-    {
+    ) external nonReentrant {
         Auction storage auction = auctions[tokenContract][tokenId];
         uint64 currentAuctionIndex = auction.index;
         if (auctionIndex > currentAuctionIndex) {
             revert InvalidAuctionIndexError(auctionIndex);
         }
 
-        Bid storage bid = bids[tokenContract][tokenId][auctionIndex][msg.sender];
+        Bid storage bid = bids[tokenContract][tokenId][auctionIndex][
+            msg.sender
+        ];
         if (bid.commitment != bytes20(0)) {
             revert UnrevealedBidError();
         }
 
         if (auctionIndex == currentAuctionIndex) {
-            // If bidder has revealed their bid and is not currently in the 
+            // If bidder has revealed their bid and is not currently in the
             // running to win the auction, they can withdraw their collateral.
             if (msg.sender == auction.highestBidder) {
-                revert CannotWithdrawError();    
+                revert CannotWithdrawError();
             }
         }
         // Return collateral

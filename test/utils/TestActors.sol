@@ -10,6 +10,7 @@ abstract contract TestActors is Test {
     address constant david = address(uint160(uint256(keccak256("david"))));
     address constant ethan = address(uint160(uint256(keccak256("ethan"))));
     address constant fred = address(uint160(uint256(keccak256("fred"))));
+    address constant greg = address(uint160(uint256(keccak256("greg"))));
 
     function setUp() public virtual {
         vm.label(alice, "Alice");
@@ -18,5 +19,6 @@ abstract contract TestActors is Test {
         vm.label(david, "David");
         vm.label(ethan, "Ethan");
         vm.label(fred, "Fred");
+        vm.label(greg, "Greg");
     }
 }

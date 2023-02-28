@@ -15,6 +15,9 @@ contract OverCollateralizedAuctionTest is
 
     uint96 constant ONE_ETH = 10**18;
     uint256 constant TOKEN_ID = 1;
+    uint96 constant MIN_BID = 10**18;
+    uint96 constant MAX_BID = 2 * (10**18);
+    uint96 constant BID_UNIT = 10**16;
 
     function setUp() public override {
         super.setUp();
@@ -576,6 +579,122 @@ contract OverCollateralizedAuctionTest is
         hoax(bob);
         vm.expectRevert(UnrevealedBidError.selector);
         auction.withdrawCollateral(address(erc721), TOKEN_ID, 1);
+    }
+
+    function testFivePersonAuction() external {
+        OverCollateralizedAuction.Auction memory expectedState = createAuction(
+            TOKEN_ID
+        );
+        //Commitment Stage
+        skip(1 hours + 30 minutes);
+        uint256 collateral = 2 * ONE_ETH;
+        commitmentStage(collateral);
+
+        //Reveal Stage
+        skip(1 hours);
+        revealStage(collateral);
+
+        auction.endAuction(address(erc721), 1);
+        uint96 bidPrice = (ONE_ETH + (15 * BID_UNIT));
+        assertEq(erc721.ownerOf(1), david, "owner of tokenId 1");
+
+        //assertProofStage();
+
+        expectedState.numUnrevealedBids = 0;
+        expectedState.highestBid = ONE_ETH + (20 * BID_UNIT);
+        expectedState.highestBidder = david;
+        expectedState.secondHighestBid = ONE_ETH + (15 * BID_UNIT);
+        //expectedState.secondHighestBidder = fred;
+        assertAuctionsEqual(
+            auction.getAuction(address(erc721), 1),
+            expectedState
+        );
+    }
+
+    ///////////////// 5 Person Auction Stages ///////////////
+    function commitmentStage(uint256 collateral) private {
+        commitBid(
+            TOKEN_ID,
+            bob,
+            ONE_ETH + (1 * BID_UNIT),
+            collateral,
+            bytes32(uint256(123))
+        );
+        commitBid(
+            TOKEN_ID,
+            charlie,
+            ONE_ETH + (10 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+        commitBid(
+            TOKEN_ID,
+            david,
+            ONE_ETH + (20 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+        commitBid(
+            TOKEN_ID,
+            ethan,
+            ONE_ETH + (4 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+        commitBid(
+            TOKEN_ID,
+            fred,
+            ONE_ETH + (15 * BID_UNIT),
+            collateral,
+            bytes32(uint256(234))
+        );
+    }
+
+    function revealStage(uint256 collateral) private {
+        hoax(david);
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (20 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        hoax(fred);
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (15 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        hoax(ethan);
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (4 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        hoax(bob);
+        uint256 bobBalanceBefore = bob.balance;
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (1 * BID_UNIT),
+            bytes32(uint256(123))
+        );
+        assertEq(bob.balance, bobBalanceBefore + collateral, "bob's balance");
+
+        hoax(charlie);
+        uint256 charlieBalanceBefore = charlie.balance;
+        auction.revealBid(
+            address(erc721),
+            TOKEN_ID,
+            ONE_ETH + (10 * BID_UNIT),
+            bytes32(uint256(234))
+        );
+        assertEq(
+            charlie.balance,
+            charlieBalanceBefore + collateral,
+            "charlie's balance"
+        );
     }
 
     ////////////////////////////////////////////////////////

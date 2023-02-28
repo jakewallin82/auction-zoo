@@ -31,17 +31,17 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
     ///        pair) share the same storage. This value is incremented for
     ///        each new auction of a particular asset.
     struct Auction {
+        address auctioneer;
         address seller;
         uint32 startTime;
         uint32 endOfBiddingPeriod;
         uint32 endOfRevealPeriod;
         // =====================
+        uint64 totalBidders;
         uint64 numUnrevealedBids;
-        uint96 highestBid;
         uint96 secondHighestBid;
         // =====================
         address highestBidder;
-        address secondHighestBidder;
         uint64 index;
     }
 
@@ -108,6 +108,19 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
         address bidder
     );
 
+    /// @notice Emitted when a winner is announced by the auctioneer
+    /// @param tokenContract The address of the ERC721 contract for the asset
+    ///        being auctioned.
+    /// @param tokenId The ERC721 token ID of the asset being auctioned.
+    /// @param winner The address of the highest bidder
+    /// @param salePrice Second highest price computed off-chain
+    event WinnerAnnounced(
+        address tokenContract,
+        uint256 tokenId,
+        address winner,
+        uint96 salePrice
+    );
+
     /// @notice A mapping storing auction parameters and state, indexed by
     ///         the ERC721 contract address and token ID of the asset being
     ///         auctioned.
@@ -123,6 +136,9 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
     mapping(address => mapping(uint256 => mapping(uint64 => mapping(address => BidProof)))) // ERC721 token contract // ERC721 token ID // Auction index // Bidder
         public bidProofs;
 
+    mapping(address => mapping(uint256 => mapping(uint64 => mapping(uint256 => address)))) // ERC721 token contract // ERC721 token ID // Auction index // Bidder
+        public bidders;
+
     /// @notice Creates an auction for the given ERC721 asset with the given
     ///         auction parameters.
     /// @param tokenContract The address of the ERC721 contract for the asset
@@ -135,6 +151,7 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
     /// @param reservePrice The minimum price that the asset will be sold for.
     ///        If no bids exceed this price, the asset is returned to `seller`.
     function createAuction(
+        address auctioneer,
         address tokenContract,
         uint256 tokenId,
         uint32 startTime,
@@ -155,21 +172,21 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
         if (revealPeriod < 1 hours) {
             revert RevealPeriodTooShortError(revealPeriod);
         }
-
+        auction.auctioneer = auctioneer;
         auction.seller = msg.sender;
         auction.startTime = startTime;
         auction.endOfBiddingPeriod = startTime + bidPeriod;
         auction.endOfRevealPeriod = startTime + bidPeriod + revealPeriod;
         // Reset
+        auction.totalBidders = 0;
         auction.numUnrevealedBids = 0;
         // Both highest and second-highest bid are set to the reserve price.
         // Any winning bid must be at least this price, and the winner will
         // pay at least this price.
-        auction.highestBid = reservePrice;
         auction.secondHighestBid = reservePrice;
         // Reset
         auction.highestBidder = address(0);
-        auction.secondHighestBidder = address(0);
+        //auction.secondHighestBidder = address(0);
         // Increment auction index for this item
         auction.index++;
 
@@ -218,6 +235,10 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
         ];
         // If this is the bidder's first commitment, increment `numUnrevealedBids`.
         if (bid.commitment == bytes20(0)) {
+            bidders[tokenContract][tokenId][auctionIndex][
+                auction.totalBidders
+            ] = msg.sender;
+            auction.totalBidders++;
             auction.numUnrevealedBids++;
             bid.revealed = 0;
         }
@@ -227,19 +248,37 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
         }
     }
 
+    function announceWinner(
+        address tokenContract,
+        uint256 tokenId,
+        address winner,
+        uint96 salePrice
+    ) external nonReentrant {
+        Auction storage auction = auctions[tokenContract][tokenId];
+        if (msg.sender == auction.auctioneer) {
+            auction.highestBidder = winner;
+            auction.secondHighestBid = salePrice;
+
+            emit WinnerAnnounced(
+                tokenContract,
+                tokenId,
+                auction.highestBidder,
+                auction.secondHighestBid
+            );
+        }
+    }
+
     /// @notice Reveals the value of a bid that was previously committed to.
     /// @param tokenContract The address of the ERC721 contract for the asset
     ///        being auctioned.
     /// @param tokenId The ERC721 token ID of the asset being auctioned.
     /// @param hashNode The pointer for a node in the hash chain
     /// @param label The label for whether bid is >, =, or <= salePrice
-    /// @param salePrice Second highest price computed off-chain
     function submitProof(
         address tokenContract,
         uint256 tokenId,
         bytes32 hashNode,
-        uint16 label,
-        uint96 salePrice
+        uint16 label
     ) external nonReentrant {
         Auction storage auction = auctions[tokenContract][tokenId];
 
@@ -259,41 +298,47 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
         auction.numUnrevealedBids--;
         bid.revealed = 1;
         bidProof.label = label;
-        if (label == 2) {
-            bidProof.hashNode = hashNode; //up for debate if necessary to reveal winners bid, could provide ge proof
-            auction.highestBidder = msg.sender;
-            auction.secondHighestBid = salePrice;
-        } else {
-            bytes32 tailNode32 = traverseHashChain(hashNode, salePrice);
-            bytes20 tailNode20 = bytes20(tailNode32);
-            if (tailNode20 == bid.commitment) {
-                bidProof.hashNode = hashNode;
+        if (msg.sender == auction.highestBidder) {
+            bidProof.label = 2;
+            if (bid.collateral < auction.secondHighestBid) {
+                // No winner, return asset to seller.
+                ERC721(tokenContract).safeTransferFrom(
+                    address(this),
+                    auction.seller,
+                    tokenId
+                );
+            } else {
+                // Transfer auctioned asset to highest bidder
+                ERC721(tokenContract).safeTransferFrom(
+                    address(this),
+                    auction.highestBidder,
+                    tokenId
+                );
+                auction.seller.safeTransferETH(auction.secondHighestBid);
+                // Return excess collateral
+                uint96 collateral = bid.collateral;
+                bid.collateral = 0;
+                if (collateral - auction.secondHighestBid != 0) {
+                    auction.highestBidder.safeTransferETH(
+                        collateral - auction.secondHighestBid
+                    );
+                }
             }
-        }
-
-        uint96 collateral = bid.collateral;
-        if (collateral < salePrice) {
-            // Return collateral
+        } else {
+            bidProof.hashNode = hashNode;
+            uint96 collateral = bid.collateral;
             bid.collateral = 0;
             msg.sender.safeTransferETH(collateral);
-        } else {
-            // Update record of (second-)highest bid as necessary
-            uint96 currentHighestBid = auction.highestBid;
-            if (label != 2) {
-                // Return collateral
-                bid.collateral = 0;
-                msg.sender.safeTransferETH(collateral);
-            }
-
-            emit ProofSubmitted(
-                tokenContract,
-                tokenId,
-                hashNode,
-                label,
-                salePrice,
-                msg.sender
-            );
         }
+
+        emit ProofSubmitted(
+            tokenContract,
+            tokenId,
+            hashNode,
+            label,
+            auction.secondHighestBid,
+            msg.sender
+        );
     }
 
     /// @notice Ends an active auction. Can only end an auction if the bid reveal
@@ -318,35 +363,6 @@ contract OffchainAuction is IOffchainAuctionErrors, ReentrancyGuard {
             if (auction.numUnrevealedBids != 0) {
                 // cannot end auction early unless all bids have been revealed
                 revert RevealPeriodOngoingError();
-            }
-        }
-
-        address highestBidder = auction.highestBidder;
-        if (highestBidder == address(0)) {
-            // No winner, return asset to seller.
-            ERC721(tokenContract).safeTransferFrom(
-                address(this),
-                auction.seller,
-                tokenId
-            );
-        } else {
-            // Transfer auctioned asset to highest bidder
-            ERC721(tokenContract).safeTransferFrom(
-                address(this),
-                highestBidder,
-                tokenId
-            );
-            uint96 secondHighestBid = auction.secondHighestBid;
-            auction.seller.safeTransferETH(secondHighestBid);
-
-            // Return excess collateral
-            Bid storage bid = bids[tokenContract][tokenId][auction.index][
-                highestBidder
-            ];
-            uint96 collateral = bid.collateral;
-            bid.collateral = 0;
-            if (collateral - secondHighestBid != 0) {
-                highestBidder.safeTransferETH(collateral - secondHighestBid);
             }
         }
     }

@@ -32,14 +32,15 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
         OffchainAuction.Auction memory expectedAuction = OffchainAuction
             .Auction({
                 seller: alice,
+                auctioneer: greg,
                 startTime: uint32(block.timestamp + 1 hours),
                 endOfBiddingPeriod: uint32(block.timestamp + 2 hours),
                 endOfRevealPeriod: uint32(block.timestamp + 3 hours),
+                totalBidders: 0,
                 numUnrevealedBids: 0,
-                highestBid: ONE_ETH,
                 secondHighestBid: ONE_ETH,
                 highestBidder: address(0),
-                secondHighestBidder: address(0),
+                //secondHighestBidder: address(0),
                 index: 1
             });
         OffchainAuction.Auction memory actualAuction = createAuction(TOKEN_ID);
@@ -59,10 +60,9 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
         assertEq(erc721.ownerOf(1), david, "owner of tokenId 1");
 
         expectedState.numUnrevealedBids = 0;
-        //expectedState.highestBid = ONE_ETH + (20 * BID_UNIT);
         expectedState.highestBidder = david;
         expectedState.secondHighestBid = ONE_ETH + (15 * BID_UNIT);
-        expectedState.secondHighestBidder = fred;
+        //audit(1, salePrice);
         assertAuctionsEqual(
             auction.getAuction(address(erc721), 1),
             expectedState
@@ -73,9 +73,9 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
     function commitmentStage(uint256 collateral) private {
         uint96 bobPrice = ONE_ETH + (1 * BID_UNIT);
         uint96 charliePrice = ONE_ETH + (10 * BID_UNIT);
-        uint96 davidPrice = (20 * BID_UNIT);
-        uint96 ethanPrice = (4 * BID_UNIT);
-        uint96 fredPrice = (15 * BID_UNIT);
+        uint96 davidPrice = ONE_ETH + (20 * BID_UNIT);
+        uint96 ethanPrice = ONE_ETH + (4 * BID_UNIT);
+        uint96 fredPrice = ONE_ETH + (15 * BID_UNIT);
         bytes32 bobComm = commitBid(
             TOKEN_ID,
             bob,
@@ -114,44 +114,43 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
         //Reveal Stage
         skip(1 hours);
 
+        //Gary has received all decommitments privately, and announces the winner and sale price
+        hoax(greg);
         uint96 salePrice = (ONE_ETH + (15 * BID_UNIT));
+        auction.announceWinner(address(erc721),TOKEN_ID,david, salePrice);
+        
         hoax(bob);
-        auction.submitProof(
-            address(erc721),
-            TOKEN_ID,
-            traverseHashChain(bobComm, salePrice - bobPrice),
-            0,
-            salePrice
-        );
+
+        bytes32 setupNode = traverseHashChain(bobComm, salePrice - bobPrice);
+
+        auction.submitProof(address(erc721), TOKEN_ID, setupNode, 0);
         hoax(charlie);
         auction.submitProof(
             address(erc721),
             TOKEN_ID,
             traverseHashChain(charComm, salePrice - charliePrice),
-            0,
-            salePrice
+            0
         );
         hoax(david);
-        auction.submitProof(address(erc721), TOKEN_ID, davComm, 2, salePrice);
+        auction.submitProof(address(erc721), TOKEN_ID, davComm, 2);
         hoax(ethan);
         auction.submitProof(
             address(erc721),
             TOKEN_ID,
             traverseHashChain(ethComm, salePrice - ethanPrice),
-            0,
-            salePrice
+            0
         );
         hoax(fred);
-        auction.submitProof(address(erc721), TOKEN_ID, fredComm, 1, salePrice);
+        auction.submitProof(address(erc721), TOKEN_ID, fredComm, 1);
     }
 
-    function traverseHashChain(bytes32 salt, uint256 bidValue)
-        internal
-        pure
+    function  traverseHashChain(bytes32 salt, uint256 limit)
+        private view
         returns (bytes32)
     {
         uint256 i;
-        for (i = MAX_BID; i > bidValue; i -= BID_UNIT) {
+        uint256 units = (limit / BID_UNIT);
+        for (i = 0; i < units; i += 1) {
             salt = keccak256(abi.encode(salt));
         }
         return salt;
@@ -174,6 +173,7 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
     {
         hoax(alice);
         auction.createAuction(
+            greg,
             address(erc721),
             tokenId,
             uint32(block.timestamp + 1 hours),
@@ -202,17 +202,54 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
         );
         //create hash-chain of length x
         uint256 i;
+        bytes32 node = salt;
         for (i = MAX_BID; i > bidValue; i -= BID_UNIT) {
-            salt = keccak256(abi.encode(salt));
+            node = keccak256(abi.encode(node));
         }
-        bytes20 commitment = bytes20(salt);
-
+        bytes20 commitment = bytes20(node);
         hoax(from);
         auction.commitBid{value: collateral}(
             address(erc721),
             tokenId,
             commitment
         );
+    }
+
+    function audit(uint64 auctionIndex, uint96 salePrice) private {
+        uint64 i;
+        uint64 labelCounter;
+        for (
+            i = 0;
+            i < auction.getAuction(address(erc721), 1).totalBidders;
+            i++
+        ) {
+            address bidder = auction.bidders(
+                address(erc721),
+                TOKEN_ID,
+                auctionIndex,
+                i
+            );
+            (
+                bytes20 storedCommitment,
+                uint96 storedCollateral,
+                uint96 storedRevealed
+            ) = auction.bids(address(erc721), TOKEN_ID, auctionIndex, bidder);
+            (bytes32 storedHashNode, uint16 storedLabel) = auction.bidProofs(
+                address(erc721),
+                TOKEN_ID,
+                auctionIndex,
+                bidder
+            );
+            labelCounter += storedLabel;
+            if (storedLabel != GE) {
+                bytes32 tailNode = traverseHashChain(
+                    storedHashNode,
+                    MAX_BID - salePrice
+                );
+                assertEq(bytes20(tailNode), storedCommitment, "Audit Proof");
+            }
+        }
+        assertEq(labelCounter, 3, "labels");
     }
 
     function assertBid(
@@ -299,11 +336,6 @@ contract OffchainAuctionTest is IOffchainAuctionErrors, TestActors {
             actualAuction.numUnrevealedBids,
             expectedAuction.numUnrevealedBids,
             "numUnrevealedBids"
-        );
-        assertEq(
-            actualAuction.highestBid,
-            expectedAuction.highestBid,
-            "highestBid"
         );
         assertEq(
             actualAuction.secondHighestBid,
